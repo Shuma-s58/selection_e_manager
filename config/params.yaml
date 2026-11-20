@@ -1,0 +1,34 @@
+selection_e_manager:
+  ros__parameters:
+    lookback_s: 30.0
+    post_wait_s: 18.0
+    front_ocr_grace_s: 15.0
+    rear_ocr_grace_s: 10.0
+    min_votes: 1
+    dedup_s: 8.0
+    result_retention_s: 120.0
+    max_results: 150
+    max_pending: 12
+selection_e_camera:
+  ros__parameters:
+    image_topic: /camera/image_raw
+    capture_period_s: 3.0
+    output_dir: /tmp/selection_e/captures
+    max_recent_files: 3
+    file_retention_s: 600.0
+selection_e_ocr:
+  ros__parameters:
+    # box_missionと同じく、Florence専用venvのPythonで自動起動します。
+    florence_python: ~/florence2_work/.venv/bin/python
+    florence_script: ~/florence2_work/florence2_number.py
+    startup_timeout_s: 300.0
+    model: florence-community/Florence-2-large
+    device: auto
+    queue_capacity: 5
+    mock_mode: false
+    remove_failed_images: true
+selection_e_speaker:
+  ros__parameters:
+    dry_run: false
+    dictionary_path: /var/lib/mecab/dic/open-jtalk/naist-jdic
+    voice_path: /usr/share/hts-voice/nitech-jp-atr503-m001/nitech_jp_atr503_m001.htsvoice
