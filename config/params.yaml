@@ -12,8 +12,8 @@ selection_e_manager:
     preferred_camera: A  # A or B; preferred camera wins when numbers differ
 selection_e_camera:
   ros__parameters:
-    image_topic: /camera_a/image_raw
-    image_topic_b: /camera_b/image_raw
+    video_device: /dev/video0
+    video_device_b: /dev/video1  # Set to '' for one camera
     capture_period_s: 3.0
     max_frame_age_s: 3.0
     output_dir: /tmp/selection_e/captures

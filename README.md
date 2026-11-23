@@ -23,7 +23,7 @@ flowchart TD
 ```
 
 - 所定のwaypointに到着すると、`arrival_services` が `/selection_e/control` を呼び出してミッションを開始します。
-- ミッション実行中、`camera_node` はA/Bの最新画像を**1.5秒間隔で交互に**JPEG保存します。各カメラは3秒周期です。撮影完了を通知すると `ocr_node` が認識をキューに登録します。
+- ミッション実行中、`camera_node` は `/dev/video0` と `/dev/video1` をOpenCVで直接読み、最新画像を**1.5秒間隔で交互に**JPEG保存します。各カメラは3秒周期です。撮影完了を通知すると `ocr_node` が画像ファイルを認識キューに登録します。カメラ画像のROS Topicへの変換は不要です。
 - OCRは**撮影とは別ノード・別ワーカー**で実行されるため、認識中も撮影を継続します。Florence-2モデルはワーカー起動時に一度ロードし、撮影のたびに読み直しません。
 - 数字認識に成功した結果を保持し、`mid360_passage_detector` の通過イベントを受けて適切な撮影時刻の結果を選びます。決定した数字をOpen JTalkで読み上げます。
 
@@ -73,7 +73,7 @@ selection_e_manager/
 1. ROS 2 Humbleと`colcon`を利用できるUbuntu 22.04環境。
 2. `waypoint_tools` の **`add_service`ブランチ**（waypointから起動する場合）。
 3. `mid360_passage_detector` と Livox MID360の点群・TF（実際の通過イベントを使う場合）。
-4. `/camera/image_raw` と `/camera_b/image_raw` (`sensor_msgs/msg/Image`) を配信するカメラノード。実際のTopic名に合わせて設定してください。
+4. `/dev/video0`、`/dev/video1` などのV4L2カメラデバイス。実際のデバイス名に合わせて `video_device` と `video_device_b` を設定してください。他のカメラノードが同じデバイスを使用している場合は停止してください。
 5. `florence2_work/florence2_number.py` と、Florence-2を実行できる専用Python仮想環境（`torch`、`transformers`、`Pillow`、モデルファイルなど）。
 6. `open_jtalk`、辞書、HTS音声モデル、`aplay`（音声を再生する場合）。
 
@@ -91,8 +91,7 @@ ROS 2側に必要な主なパッケージの例：
 sudo apt update
 sudo apt install -y \
   python3-opencv python3-pil \
-  ros-humble-rclpy ros-humble-cv-bridge \
-  ros-humble-sensor-msgs ros-humble-std-msgs \
+  ros-humble-rclpy ros-humble-std-msgs \
   ros-humble-std-srvs ros-humble-launch-ros
 ```
 
@@ -159,8 +158,8 @@ selection_e_ocr:
 ```yaml
 selection_e_camera:
   ros__parameters:
-    image_topic: /camera/image_raw
-    image_topic_b: /camera_b/image_raw
+    video_device: /dev/video0
+    video_device_b: /dev/video1
     capture_period_s: 3.0
     max_frame_age_s: 3.0
     output_dir: /tmp/selection_e/captures
@@ -183,7 +182,7 @@ selection_e_manager:
 
 `max_recent_files`はカメラノードがメモリで管理する直近ファイル一覧の長さです。**撮影済みファイルを3枚に物理的に制限するパラメータではありません。** JPEGファイルの整理は`file_retention_s`などで行われます。数字認識に成功した結果のメタデータは、`result_retention_s`で設定した期間だけ管理されます。
 
-`image_topic`はカメラA、`image_topic_b`はカメラBの入力です。両方を設定すると、ミッション開始後、A→1.5秒後にB→1.5秒後にAの順に保存します（`capture_period_s: 3.0`の場合）。両カメラはそれぞれ3秒周期です。単眼構成に戻す場合は`image_topic_b: ''`にします。`max_frame_age_s`より古い受信画像は保存せず、カメラが停止したときの画像の再利用を防ぎます。
+`video_device`はカメラA、`video_device_b`はカメラBの入力です。ミッション実行中はデバイスから連続的にフレームを読み、A→1.5秒後にB→1.5秒後にAの順に最新フレームを保存します（`capture_period_s: 3.0`の場合）。単眼構成では`video_device_b: ''`にします。`max_frame_age_s`より古いフレームは保存しません。デバイスが開けない場合は警告を出し、再試行します。デバイス名は `ls -l /dev/video*` または `v4l2-ctl --list-devices` で確認できます。
 
 `preferred_camera`は`A`または`B`です。各カメラの対象期間内の直近3枚の撮影結果から番号を選び、優先カメラに有効な番号があればそれを採用します。優先カメラで番号が決まらなければ、もう一方の結果を採用します。同じカメラで異なる番号が同票の場合、そのカメラでは番号を決めません。撮影通知・OCR結果・最終決定には`camera_id`が含まれます。起動後も`ros2 param set /selection_e_manager preferred_camera B`で切り替えられます。
 
@@ -193,12 +192,11 @@ OCRは1つのワーカーで順番に実行します。全体で1.5秒に1枚撮
 
 ### 6.1 センサ・カメラ
 
-先にMID360、通過判定ノード、カメラ画像配信ノードを起動してください。通過判定ノードの具体的なlaunch名は、そのリポジトリの内容を確認してください。例：
+先にMID360と通過判定ノードを起動し、カメラデバイスを確認してください。カメラ画像配信ノードは不要です。通過判定ノードの具体的なlaunch名は、そのリポジトリの内容を確認してください。例：
 
 ```bash
-ros2 topic list | grep -E 'livox|passing_direction|camera/image_raw'
-ros2 topic hz /camera/image_raw
-ros2 topic hz /camera_b/image_raw
+ros2 topic list | grep -E 'livox|passing_direction'
+ls -l /dev/video*
 ```
 
 ### 6.2 統合システム
@@ -260,9 +258,9 @@ waypoints:
 | --- | --- | --- |
 | `/selection_e/control` | `std_srvs/srv/SetBool` | ミッション開始・停止 |
 | `/selection_e/active` | `std_msgs/msg/Bool` | manager → camera・OCR の稼働フラグ |
-| `/camera/image_raw`, `/camera_b/image_raw` | `sensor_msgs/msg/Image` | カメラA・Bの入力（設定で変更可） |
+| `/dev/video0`, `/dev/video1` | V4L2デバイス | カメラA・Bの入力（`video_device`等で変更可） |
 | `/selection_e/captured` | `std_msgs/msg/String`（JSON） | 撮影画像ID・カメラID・撮影時刻・画像パス |
-| `/selection_e/recognized` | `std_msgs/msg/String`（JSON） | OCR認識結果 |
+| `/selection_e/recognized` | `std_msgs/msg/String`（JSON） | `image_id`, `camera_id`, `success`, `numbers`のみ |
 | `/selection_e/ocr_status` | `std_msgs/msg/String`（JSON） | `loading` / `ready` / `error`等 |
 | `/passing_direction` | `std_msgs/msg/String`（JSON） | 通過方向・対象ID |
 | `/selection_e/speak` | `std_msgs/msg/String` | 読み上げる数字 |
@@ -313,7 +311,7 @@ ros2 topic pub --once /passing_direction std_msgs/msg/String \
 
 ### 9.2 実カメラ・実モデルでの確認
 
-1. `ros2 topic hz /camera/image_raw`と`ros2 topic hz /camera_b/image_raw`で両カメラの画像を確認します。
+1. `ls -l /dev/video*`で両カメラを確認し、`config/params.yaml`の`video_device`と`video_device_b`を合わせます。ユーザーがデバイスを読めることも確認します。
 2. `ros2 launch selection_e_manager system.launch.py`でモデルが自動起動し、`/selection_e/ocr_status`が`ready`になることを確認します。
 3. `/selection_e/control`を`true`にします。
 4. `/selection_e/captured`が約1.5秒間隔で更新され、`camera_id`が`A`と`B`で交互になることを確認します。
@@ -334,7 +332,7 @@ python3 -m pytest -q test/
 
 - **単一対象物を前提とした初期実装**です。LiDAR追跡IDと、カメラ画像のどの数字が同じ物体に属するかの対応付けは未実装です。複数物体が同時に見える環境では誤判定する可能性があります。
 - `/passing_direction`の判定は相対的な通過方向です。自機移動中の静止物体などについては別途検証が必要です。
-- カメラは外部Topicの**最新フレーム**を交互に保存します。カメラシャッターをハードウェア制御する実装ではありません。
+- カメラはV4L2デバイスの**最新フレーム**を交互に保存します。カメラシャッターをハードウェア制御する実装ではありません。
 - OCRの推論速度が撮影より遅く、キューが満杯になると新しいOCR要求を破棄します。**撮影自体は継続**します。
 - `REAR_TO_FRONT`の読み上げは、通過後の画像収集時間とOCR猶予の分だけ遅れます。番号が写らなければ読み上げません。
 - 成功したOCR結果は保存・参照しますが、**画像上の数字とLiDAR追跡IDの厳密な関連付けや、無制限の長期保存はしていません**。画像ファイルは初期設定で600秒経過後に削除され得ます。

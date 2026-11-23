@@ -24,6 +24,7 @@ class ManagerNode(Node):
         self.results = deque(maxlen=int(self.get_parameter('max_results').value))
         self.captures = deque(maxlen=200)
         self.completed_ids = set()
+        self.unmatched_recognitions = {}
         self.pending = []
         self.last_events = {}
         self.create_service(SetBool, '/selection_e/control', self.control)
@@ -55,6 +56,7 @@ class ManagerNode(Node):
                 self.results.clear()
                 self.captures.clear()
                 self.completed_ids.clear()
+                self.unmatched_recognitions.clear()
                 self.pending.clear()
                 self.last_events.clear()
                 self.get_logger().info('Mission started')
@@ -74,19 +76,37 @@ class ManagerNode(Node):
             item = json.loads(msg.data)
             if float(item['captured_at']) >= self.started_at:
                 self.captures.append(item)
+                recognized = self.unmatched_recognitions.pop(item['image_id'], None)
+                if recognized is not None:
+                    self.record_recognition(recognized, item)
         except (ValueError, TypeError, KeyError):
             self.get_logger().warning('Invalid capture metadata')
+
+    def record_recognition(self, recognized, capture):
+        image_id = capture['image_id']
+        self.completed_ids.add(image_id)
+        if recognized.get('success'):
+            result = dict(recognized, captured_at=float(capture['captured_at']),
+                          camera_id=capture.get('camera_id', 'A'))
+            self.results.append(result)
+            self.get_logger().info(
+                f'Retained OCR result {result.get("numbers")} from {result["captured_at"]}')
 
     def on_recognized(self, msg):
         if not self.active:
             return
         try:
             item = json.loads(msg.data)
-            if float(item['captured_at']) >= self.started_at:
-                self.completed_ids.add(item['image_id'])
-                if item.get('success'):
-                    self.results.append(item)
-                    self.get_logger().info(f'Retained OCR result {item.get("numbers")} from {item["captured_at"]}')
+            image_id = item['image_id']
+            capture = next((x for x in reversed(self.captures)
+                            if x['image_id'] == image_id), None)
+            if capture is not None:
+                self.record_recognition(item, capture)
+            else:
+                # Topics have independent subscriptions; OCR may arrive first.
+                self.unmatched_recognitions[image_id] = item
+                if len(self.unmatched_recognitions) > 200:
+                    self.unmatched_recognitions.pop(next(iter(self.unmatched_recognitions)))
         except (ValueError, TypeError, KeyError):
             self.get_logger().warning('Invalid OCR result')
 

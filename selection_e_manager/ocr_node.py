@@ -149,11 +149,9 @@ class OcrNode(Node):
                 response = self.recognize(data)
                 numbers = list(dict.fromkeys(str(n) for n in response.get('numbers', [])))
                 ok = bool(response.get('success')) and bool(numbers)
-                result = dict(data, success=ok, numbers=numbers,
-                              regions=response.get('regions', []),
-                              finished_at=self.get_clock().now().nanoseconds / 1e9)
-                if response.get('error'):
-                    result['error'] = str(response['error'])
+                result = {'image_id': data['image_id'],
+                          'camera_id': data.get('camera_id', 'A'),
+                          'success': ok, 'numbers': numbers}
                 msg = String()
                 msg.data = json.dumps(result, ensure_ascii=False)
                 self.publisher.publish(msg)
@@ -163,8 +161,9 @@ class OcrNode(Node):
             except Exception as exc:
                 self.get_logger().error(f'OCR failed: {exc}')
                 out = String()
-                out.data = json.dumps(dict(data, success=False, numbers=[], error=str(exc),
-                                           finished_at=self.get_clock().now().nanoseconds / 1e9))
+                out.data = json.dumps({'image_id': data['image_id'],
+                                       'camera_id': data.get('camera_id', 'A'),
+                                       'success': False, 'numbers': []})
                 self.publisher.publish(out)
                 if self.process is not None and self.process.poll() is not None:
                     self.status('error', 'Florence worker stopped unexpectedly')
