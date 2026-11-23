@@ -12,7 +12,7 @@ selection_e_manager:
     preferred_camera: A  # A or B; preferred camera wins when numbers differ
 selection_e_camera:
   ros__parameters:
-    image_topic: /camera/image_raw
+    image_topic: /camera_a/image_raw
     image_topic_b: /camera_b/image_raw
     capture_period_s: 3.0
     max_frame_age_s: 3.0
@@ -22,10 +22,10 @@ selection_e_camera:
 selection_e_ocr:
   ros__parameters:
     # box_missionと同じく、Florence専用venvのPythonで自動起動します。
-    florence_python: ~/florence2_work/.venv/bin/python
-    florence_script: ~/florence2_work/florence2_number.py
+    florence_python: /home/orne-box/florence2_jetson/.venv/bin/python
+    florence_script: /home/orne-box/florence2_jetson/florence2_work/florence2_number.py
     startup_timeout_s: 300.0
-    model: florence-community/Florence-2-large
+    model: /home/orne-box/florence2_jetson/Florence2-base/
     device: auto
     queue_capacity: 12
     mock_mode: false

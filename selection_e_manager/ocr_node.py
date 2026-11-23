@@ -67,7 +67,7 @@ class OcrNode(Node):
             self.get_logger().warning(f'Invalid captured payload: {exc}')
 
     def validate_environment(self):
-        executable = Path(str(self.setting('florence_python'))).expanduser().resolve()
+        executable = Path(str(self.setting('florence_python'))).expanduser().absolute()
         script = Path(str(self.setting('florence_script'))).expanduser().resolve()
         if not executable.is_file() or not os.access(executable, os.X_OK):
             raise RuntimeError(f'Florence Python not executable: {executable}')
