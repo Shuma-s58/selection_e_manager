@@ -17,22 +17,32 @@ class CameraNode(Node):
     def __init__(self):
         super().__init__('selection_e_camera')
         self.declare_parameter('image_topic', '/camera/image_raw')
+        self.declare_parameter('image_topic_b', '')
         self.declare_parameter('capture_period_s', 3.0)
+        self.declare_parameter('max_frame_age_s', 3.0)
         self.declare_parameter('output_dir', '/tmp/selection_e/captures')
         self.declare_parameter('max_recent_files', 3)
         self.declare_parameter('file_retention_s', 600.0)
         self.bridge = CvBridge()
         self.lock = threading.Lock()
-        self.latest = None
+        self.latest = {'A': None, 'B': None}
         self.active = False
+        self.next_camera = 'A'
+        self.dual_camera = bool(self.get_parameter('image_topic_b').value)
         self.recent = []
         self.directory = Path(self.get_parameter('output_dir').value).expanduser()
         self.directory.mkdir(parents=True, exist_ok=True)
         self.create_subscription(Image, self.get_parameter('image_topic').value,
-                                 self.on_image, 10)
+                                 lambda msg: self.on_image('A', msg), 10)
+        if self.dual_camera:
+            self.create_subscription(Image, self.get_parameter('image_topic_b').value,
+                                     lambda msg: self.on_image('B', msg), 10)
         self.create_subscription(Bool, '/selection_e/active', self.on_active, 10)
         self.pub = self.create_publisher(String, '/selection_e/captured', 20)
-        self.create_timer(float(self.get_parameter('capture_period_s').value), self.capture)
+        period = float(self.get_parameter('capture_period_s').value)
+        if period <= 0:
+            raise ValueError('capture_period_s must be positive')
+        self.create_timer(period / 2 if self.dual_camera else period, self.capture)
         self.create_timer(30.0, self.cleanup)
 
     def cleanup(self):
@@ -45,24 +55,36 @@ class CameraNode(Node):
             except OSError as exc:
                 self.get_logger().warning(f'Cleanup failed: {exc}')
 
-    def on_image(self, msg):
+    def on_image(self, camera_id, msg):
         with self.lock:
-            self.latest = msg
+            if self.active:
+                self.latest[camera_id] = (msg, self.get_clock().now().nanoseconds / 1e9)
 
     def on_active(self, msg):
         with self.lock:
+            if msg.data and not self.active:
+                self.next_camera = 'A'
             self.active = msg.data
             if not msg.data:
-                self.latest = None
+                self.latest = {'A': None, 'B': None}
 
     def capture(self):
         with self.lock:
-            if not self.active or self.latest is None:
+            if not self.active:
                 return
-            msg = self.latest
+            camera_id = self.next_camera
+            if self.dual_camera:
+                self.next_camera = 'B' if camera_id == 'A' else 'A'
+            latest = self.latest[camera_id]
+        if latest is None:
+            return
+        msg, received_at = latest
         stamp = self.get_clock().now().nanoseconds / 1e9
+        if stamp - received_at > float(self.get_parameter('max_frame_age_s').value):
+            self.get_logger().warning(f'Skipping stale frame from camera {camera_id}')
+            return
         ident = uuid.uuid4().hex[:12]
-        path = self.directory / f'{int(stamp * 1000)}_{ident}.jpg'
+        path = self.directory / f'{int(stamp * 1000)}_{camera_id}_{ident}.jpg'
         try:
             frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
             if not cv2.imwrite(str(path), frame):
@@ -70,7 +92,8 @@ class CameraNode(Node):
         except Exception as exc:
             self.get_logger().error(f'Capture failed: {exc}')
             return
-        payload = {'image_id': ident, 'captured_at': stamp, 'image_path': str(path)}
+        payload = {'image_id': ident, 'camera_id': camera_id,
+                   'captured_at': stamp, 'image_path': str(path)}
         out = String()
         out.data = json.dumps(payload)
         self.pub.publish(out)

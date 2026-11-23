@@ -31,3 +31,18 @@ def choose_number(results, at_least=1):
     top = max(counts.values())
     winners = [n for n, count in counts.items() if count == top]
     return winners[0] if top >= at_least and len(winners) == 1 else None
+
+
+def choose_preferred_number(results, preferred_camera='A', at_least=1):
+    """Choose within each camera first; use the other camera only if needed.
+
+    Older capture messages without camera_id are treated as camera A.
+    """
+    if preferred_camera not in ('A', 'B'):
+        raise ValueError('preferred_camera must be A or B')
+    for camera_id in (preferred_camera, 'B' if preferred_camera == 'A' else 'A'):
+        camera_results = [x for x in results if x.get('camera_id', 'A') == camera_id]
+        number = choose_number(camera_results, at_least)
+        if number is not None:
+            return number, camera_id
+    return None, None

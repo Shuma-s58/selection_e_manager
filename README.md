@@ -12,8 +12,8 @@
 flowchart TD
     WP["waypoint_tools<br>arrival_services"] -->|"SetBool: true / false"| M["manager_node<br>全体制御"]
     L["mid360_passage_detector"] -->|"/passing_direction"| M
-    M -->|"/selection_e/active"| C["camera_node<br>3秒周期で画像を保存"]
-    CAM["カメラドライバ<br>/camera/image_raw"] --> C
+    M -->|"/selection_e/active"| C["camera_node<br>A/Bを交互に保存"]
+    CAM["カメラA/Bの画像Topic"] --> C
     C -->|"/selection_e/captured"| O["ocr_node<br>非同期キュー"]
     O --> W["Florence-2常駐ワーカー<br>専用Python venv"]
     W --> O
@@ -23,7 +23,7 @@ flowchart TD
 ```
 
 - 所定のwaypointに到着すると、`arrival_services` が `/selection_e/control` を呼び出してミッションを開始します。
-- ミッション実行中、`camera_node` はカメラTopicの最新画像を**3秒周期**でJPEG保存します。撮影完了を通知すると `ocr_node` が認識をキューに登録します。
+- ミッション実行中、`camera_node` はA/Bの最新画像を**1.5秒間隔で交互に**JPEG保存します。各カメラは3秒周期です。撮影完了を通知すると `ocr_node` が認識をキューに登録します。
 - OCRは**撮影とは別ノード・別ワーカー**で実行されるため、認識中も撮影を継続します。Florence-2モデルはワーカー起動時に一度ロードし、撮影のたびに読み直しません。
 - 数字認識に成功した結果を保持し、`mid360_passage_detector` の通過イベントを受けて適切な撮影時刻の結果を選びます。決定した数字をOpen JTalkで読み上げます。
 
@@ -31,8 +31,8 @@ flowchart TD
 
 | イベント | 使用する画像 | 読み上げタイミング |
 | --- | --- | --- |
-| `FRONT_TO_REAR` | 通過**前**の指定期間に撮影し、数字認識に成功した画像から直近最大3枚 | 通過後、認識待機が終わってから |
-| `REAR_TO_FRONT` | 通過**後**の指定期間に撮影し、数字認識に成功した画像から直近最大3枚 | 通過後の撮影・認識待機が終わってから |
+| `FRONT_TO_REAR` | 通過**前**の指定期間に認識した画像からカメラごとに直近最大3枚 | 通過後、認識待機が終わってから |
+| `REAR_TO_FRONT` | 通過**後**の指定期間に認識した画像からカメラごとに直近最大3枚 | 通過後の撮影・認識待機が終わってから |
 
 初期値：`FRONT_TO_REAR` は通過前30秒、OCR完了を最大15秒待機。`REAR_TO_FRONT` は通過後18秒間の画像を対象とし、さらに最大10秒のOCR猶予を確保します。いずれも**撮影時刻**を基準に判定し、OCRの完了時刻を撮影時刻として扱いません。
 
@@ -73,7 +73,7 @@ selection_e_manager/
 1. ROS 2 Humbleと`colcon`を利用できるUbuntu 22.04環境。
 2. `waypoint_tools` の **`add_service`ブランチ**（waypointから起動する場合）。
 3. `mid360_passage_detector` と Livox MID360の点群・TF（実際の通過イベントを使う場合）。
-4. `/camera/image_raw` (`sensor_msgs/msg/Image`) を配信するカメラノード。
+4. `/camera/image_raw` と `/camera_b/image_raw` (`sensor_msgs/msg/Image`) を配信するカメラノード。実際のTopic名に合わせて設定してください。
 5. `florence2_work/florence2_number.py` と、Florence-2を実行できる専用Python仮想環境（`torch`、`transformers`、`Pillow`、モデルファイルなど）。
 6. `open_jtalk`、辞書、HTS音声モデル、`aplay`（音声を再生する場合）。
 
@@ -138,7 +138,7 @@ selection_e_ocr:
     model: /home/ros/models/Florence-2-large
     device: auto
     startup_timeout_s: 300.0
-    queue_capacity: 5
+    queue_capacity: 12
     mock_mode: false
     remove_failed_images: true
 ```
@@ -160,7 +160,9 @@ selection_e_ocr:
 selection_e_camera:
   ros__parameters:
     image_topic: /camera/image_raw
+    image_topic_b: /camera_b/image_raw
     capture_period_s: 3.0
+    max_frame_age_s: 3.0
     output_dir: /tmp/selection_e/captures
     max_recent_files: 3
     file_retention_s: 600.0
@@ -172,6 +174,7 @@ selection_e_manager:
     front_ocr_grace_s: 15.0
     rear_ocr_grace_s: 10.0
     min_votes: 1
+    preferred_camera: A
     dedup_s: 8.0
     result_retention_s: 120.0
     max_results: 150
@@ -179,6 +182,12 @@ selection_e_manager:
 ```
 
 `max_recent_files`はカメラノードがメモリで管理する直近ファイル一覧の長さです。**撮影済みファイルを3枚に物理的に制限するパラメータではありません。** JPEGファイルの整理は`file_retention_s`などで行われます。数字認識に成功した結果のメタデータは、`result_retention_s`で設定した期間だけ管理されます。
+
+`image_topic`はカメラA、`image_topic_b`はカメラBの入力です。両方を設定すると、ミッション開始後、A→1.5秒後にB→1.5秒後にAの順に保存します（`capture_period_s: 3.0`の場合）。両カメラはそれぞれ3秒周期です。単眼構成に戻す場合は`image_topic_b: ''`にします。`max_frame_age_s`より古い受信画像は保存せず、カメラが停止したときの画像の再利用を防ぎます。
+
+`preferred_camera`は`A`または`B`です。各カメラの対象期間内の直近3枚の撮影結果から番号を選び、優先カメラに有効な番号があればそれを採用します。優先カメラで番号が決まらなければ、もう一方の結果を採用します。同じカメラで異なる番号が同票の場合、そのカメラでは番号を決めません。撮影通知・OCR結果・最終決定には`camera_id`が含まれます。起動後も`ros2 param set /selection_e_manager preferred_camera B`で切り替えられます。
+
+OCRは1つのワーカーで順番に実行します。全体で1.5秒に1枚撮影するため、推論が追いつかない場合は`OCR queue full`が出て画像が破棄されます。実機でOCR所要時間と、通過後の判定待機時間を確認してください。
 
 ## 6. 起動方法
 
@@ -189,6 +198,7 @@ selection_e_manager:
 ```bash
 ros2 topic list | grep -E 'livox|passing_direction|camera/image_raw'
 ros2 topic hz /camera/image_raw
+ros2 topic hz /camera_b/image_raw
 ```
 
 ### 6.2 統合システム
@@ -250,8 +260,8 @@ waypoints:
 | --- | --- | --- |
 | `/selection_e/control` | `std_srvs/srv/SetBool` | ミッション開始・停止 |
 | `/selection_e/active` | `std_msgs/msg/Bool` | manager → camera・OCR の稼働フラグ |
-| `/camera/image_raw` | `sensor_msgs/msg/Image` | カメラ画像入力（設定で変更可） |
-| `/selection_e/captured` | `std_msgs/msg/String`（JSON） | 撮影画像ID・撮影時刻・画像パス |
+| `/camera/image_raw`, `/camera_b/image_raw` | `sensor_msgs/msg/Image` | カメラA・Bの入力（設定で変更可） |
+| `/selection_e/captured` | `std_msgs/msg/String`（JSON） | 撮影画像ID・カメラID・撮影時刻・画像パス |
 | `/selection_e/recognized` | `std_msgs/msg/String`（JSON） | OCR認識結果 |
 | `/selection_e/ocr_status` | `std_msgs/msg/String`（JSON） | `loading` / `ready` / `error`等 |
 | `/passing_direction` | `std_msgs/msg/String`（JSON） | 通過方向・対象ID |
@@ -303,10 +313,10 @@ ros2 topic pub --once /passing_direction std_msgs/msg/String \
 
 ### 9.2 実カメラ・実モデルでの確認
 
-1. `ros2 topic hz /camera/image_raw`で画像が配信されていることを確認します。
+1. `ros2 topic hz /camera/image_raw`と`ros2 topic hz /camera_b/image_raw`で両カメラの画像を確認します。
 2. `ros2 launch selection_e_manager system.launch.py`でモデルが自動起動し、`/selection_e/ocr_status`が`ready`になることを確認します。
 3. `/selection_e/control`を`true`にします。
-4. `/selection_e/captured`が約3秒間隔で更新されることを確認します。
+4. `/selection_e/captured`が約1.5秒間隔で更新され、`camera_id`が`A`と`B`で交互になることを確認します。
 5. 数字が書かれた対象をカメラに映し、`/selection_e/recognized`を確認します。
 6. `FRONT_TO_REAR`または`REAR_TO_FRONT`イベントを発行し、`/selection_e/decision`と音声を確認します。
 7. `/selection_e/control`を`false`にして撮影が止まることを確認します。
@@ -324,12 +334,12 @@ python3 -m pytest -q test/
 
 - **単一対象物を前提とした初期実装**です。LiDAR追跡IDと、カメラ画像のどの数字が同じ物体に属するかの対応付けは未実装です。複数物体が同時に見える環境では誤判定する可能性があります。
 - `/passing_direction`の判定は相対的な通過方向です。自機移動中の静止物体などについては別途検証が必要です。
-- カメラは外部Topicの**最新フレーム**を3秒周期で保存します。カメラシャッターをハードウェア制御する実装ではありません。
+- カメラは外部Topicの**最新フレーム**を交互に保存します。カメラシャッターをハードウェア制御する実装ではありません。
 - OCRの推論速度が撮影より遅く、キューが満杯になると新しいOCR要求を破棄します。**撮影自体は継続**します。
 - `REAR_TO_FRONT`の読み上げは、通過後の画像収集時間とOCR猶予の分だけ遅れます。番号が写らなければ読み上げません。
 - 成功したOCR結果は保存・参照しますが、**画像上の数字とLiDAR追跡IDの厳密な関連付けや、無制限の長期保存はしていません**。画像ファイルは初期設定で600秒経過後に削除され得ます。
 - 現実装でOCR失敗した画像は`remove_failed_images: true`なら処理後に削除されます。
-- `FRONT_TO_REAR`に認識失敗が混ざる場合、すべての画像の完了待ちが早期終了せず、OCR猶予時間まで待機する場合があります。
+- `FRONT_TO_REAR`では、両カメラの直近3枚ずつについてOCR成功・失敗の完了を待ちます。キューから破棄された画像は完了通知がないため、OCR猶予時間まで待機する場合があります。
 - 既存の4リポジトリをこのパッケージが自動で起動するわけではありません。**Florence-2ワーカーの自動起動**と、MID360通過判定ノード・カメラドライバの起動は別です。
 - この作成環境ではROS 2 Humble実機でのビルド・統合動作検証は行っていません。初回利用時は音量、カメラ方向、モデル互換性、TF、通過判定を確認してください。
 

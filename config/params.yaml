@@ -9,10 +9,13 @@ selection_e_manager:
     result_retention_s: 120.0
     max_results: 150
     max_pending: 12
+    preferred_camera: A  # A or B; preferred camera wins when numbers differ
 selection_e_camera:
   ros__parameters:
     image_topic: /camera/image_raw
+    image_topic_b: /camera_b/image_raw
     capture_period_s: 3.0
+    max_frame_age_s: 3.0
     output_dir: /tmp/selection_e/captures
     max_recent_files: 3
     file_retention_s: 600.0
@@ -24,7 +27,7 @@ selection_e_ocr:
     startup_timeout_s: 300.0
     model: florence-community/Florence-2-large
     device: auto
-    queue_capacity: 5
+    queue_capacity: 12
     mock_mode: false
     remove_failed_images: true
 selection_e_speaker:
